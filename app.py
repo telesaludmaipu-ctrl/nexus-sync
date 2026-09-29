@@ -1,5 +1,6 @@
 import streamlit as st
 import datetime
+import calendar
 import pandas as pd
 import plotly.express as px
 
@@ -11,12 +12,15 @@ from meeting_manager import (
     actualizar_participantes, obtener_usuarios, agregar_usuario, actualizar_usuario
 )
 
-# Detectar logo para usarlo como Favicon en la pestaña del navegador
+# Detectar logo para usarlo como Favicon y en la UI
 logo_icon = "📅"
-if os.path.exists("assets/logo.png"):
-    logo_icon = "assets/logo.png"
-elif os.path.exists("assets/logo.jpg"):
-    logo_icon = "assets/logo.jpg"
+logo_path = None
+if os.path.exists("assets"):
+    for f in os.listdir("assets"):
+        if f.lower() in ["logo.png", "logo.jpg", "logo.jpeg"]:
+            logo_path = os.path.join("assets", f)
+            logo_icon = logo_path
+            break
 
 st.set_page_config(page_title="Nexus Sync - Gestión de Reuniones", page_icon=logo_icon, layout="wide")
 
@@ -26,22 +30,22 @@ st.set_page_config(page_title="Nexus Sync - Gestión de Reuniones", page_icon=lo
 def rgb_to_hex(rgb):
     return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
+@st.cache_data
+def extraer_color_dominante(ruta_logo):
+    try:
+        color_thief = ColorThief(ruta_logo)
+        # Bajar un poco la calidad de escaneo para que sea instantáneo
+        dominante_rgb = color_thief.get_color(quality=5) 
+        return rgb_to_hex(dominante_rgb)
+    except Exception:
+        return "#1e3a8a"
+
 def aplicar_marca_blanca():
-    logo_path = None
-    if os.path.exists("assets/logo.png"):
-        logo_path = "assets/logo.png"
-    elif os.path.exists("assets/logo.jpg"):
-        logo_path = "assets/logo.jpg"
-        
+    global logo_path
     color_primario = "#1e3a8a" # Azul por defecto de Nexus Sync
     
     if logo_path:
-        try:
-            color_thief = ColorThief(logo_path)
-            dominante_rgb = color_thief.get_color(quality=1)
-            color_primario = rgb_to_hex(dominante_rgb)
-        except Exception:
-            pass
+        color_primario = extraer_color_dominante(logo_path)
             
     # Inyectar CSS Dinámico para teñir toda la aplicación
     css = f"""
@@ -218,21 +222,44 @@ def main_app():
                 elif hora_fin <= hora_inicio:
                     st.error("La hora de fin debe ser posterior a la de inicio.")
                 else:
-                    if guardar_sala and sala_final:
-                        agregar_sala(sh_service, sala_final)
+                    inicio_dt = datetime.datetime.combine(fecha, hora_inicio)
+                    fin_dt = datetime.datetime.combine(fecha, hora_fin)
                     
-                    emails = [opciones_personal[lbl] for lbl in participantes_sel]
-                    if correos_externos:
-                        emails.extend([x.strip() for x in correos_externos.split(",") if x.strip()])
+                    # ---------------------------------------------------------
+                    # VALIDACIÓN DE CHOQUE DE HORARIOS EN LA MISMA SALA
+                    # ---------------------------------------------------------
+                    reuniones_existentes = obtener_datos(sh_service, 'Reuniones!A2:I')
+                    choque = False
+                    for r in reuniones_existentes:
+                        if len(r) >= 8 and r[7] == 'Activa' and r[2] == sala_final:
+                            try:
+                                r_inicio = datetime.datetime.strptime(r[3].replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+                                r_fin = datetime.datetime.strptime(r[4].replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+                                # Fórmula de superposición de tiempos: (Start A < End B) and (End A > Start B)
+                                if (inicio_dt < r_fin) and (fin_dt > r_inicio):
+                                    choque = True
+                                    break
+                            except Exception:
+                                pass
+                                
+                    if choque:
+                        st.error(f"❌ ¡Choque de Horario! La sala '{sala_final}' ya tiene una reunión activa en ese bloque de tiempo. Cancela la anterior o elige otra sala/horario.")
+                    else:
+                        if guardar_sala and sala_final:
+                            agregar_sala(sh_service, sala_final)
                         
-                    inicio_iso = datetime.datetime.combine(fecha, hora_inicio).isoformat()
-                    fin_iso = datetime.datetime.combine(fecha, hora_fin).isoformat()
-                    
-                    try:
-                        agendar_reunion(cal_service, sh_service, titulo, sala_final, inicio_iso, fin_iso, emails, st.session_state['usuario_actual'])
-                        st.success("🎉 Reunión agendada exitosamente. El formulario se ha limpiado para la próxima reunión.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                        emails = [opciones_personal[lbl] for lbl in participantes_sel]
+                        if correos_externos:
+                            emails.extend([x.strip() for x in correos_externos.split(",") if x.strip()])
+                            
+                        inicio_iso = inicio_dt.isoformat()
+                        fin_iso = fin_dt.isoformat()
+                        
+                        try:
+                            agendar_reunion(cal_service, sh_service, titulo, sala_final, inicio_iso, fin_iso, emails, st.session_state['usuario_actual'])
+                            st.success("🎉 Reunión agendada exitosamente. El formulario se ha limpiado para la próxima reunión.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
     # ----------------------------------------------------
     # TAB 2: MIS REUNIONES (CON EDICIÓN DE PARTICIPANTES)
@@ -298,15 +325,27 @@ def main_app():
     # ----------------------------------------------------
     with tabs[2]:
         st.subheader("Agregar Nuevo Personal al Sistema")
+        
+        # Extraer estamentos únicos existentes en la base de datos
+        est_unicos = sorted(list(set([row[3] for row in personal_data if len(row) >= 4 and row[3].strip()])))
+        if not est_unicos:
+            est_unicos = ["Médico", "Enfermería", "TENS", "Administrativo", "Directivo"]
+            
         with st.form("form_personal", clear_on_submit=True):
             n_nombre = st.text_input("Nombre Completo")
             n_correo = st.text_input("Correo Electrónico")
             n_sector = st.text_input("Sector / Departamento")
-            n_estamento = st.selectbox("Estamento", ["Médico", "Enfermería", "TENS", "Administrativo", "Directivo", "Otro"])
+            
+            col_est1, col_est2 = st.columns(2)
+            with col_est1:
+                n_estamento_sel = st.selectbox("Selecciona un Estamento Existente", est_unicos)
+            with col_est2:
+                n_estamento_nuevo = st.text_input("O escribe uno nuevo (reemplaza al anterior)")
             
             if st.form_submit_button("Guardar Empleado"):
+                estamento_final = n_estamento_nuevo.strip() if n_estamento_nuevo.strip() else n_estamento_sel
                 if n_nombre and n_correo:
-                    agregar_personal(sh_service, n_nombre, n_correo, n_sector, n_estamento)
+                    agregar_personal(sh_service, n_nombre, n_correo, n_sector, estamento_final)
                     st.success("Personal agregado. Refresca la página para verlo en la lista.")
                 else:
                     st.error("El nombre y correo son obligatorios.")
@@ -366,27 +405,57 @@ def main_app():
                 
                 if not eventos_filtrados:
                     st.warning(f"No hay reuniones registradas en {meses_es[mes_sel]} de {ano_sel}.")
-                else:
-                    from itertools import groupby
-                    for dia, grupo in groupby(eventos_filtrados, key=lambda x: x['inicio'].date()):
-                        st.markdown(f"### 🗓️ {dia.strftime('%d/%m/%Y')}")
-                        for ev in grupo:
-                            if ev['estado'] == 'Activa':
-                                borde_color = color_primario
-                                icono = "🔵"
-                                opacidad = "1.0"
-                            else:
-                                borde_color = "#ff4b4b"
-                                icono = "🔴 CANCELADA:"
-                                opacidad = "0.6"
+                
+                # --- RENDERIZADO DEL CALENDARIO HTML MATRIZ ---
+                cal_matrix = calendar.monthcalendar(ano_sel, mes_sel)
+                dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+                
+                html_cal = "<table style='width:100%; border-collapse: collapse; margin-top: 10px; font-family: sans-serif;'>"
+                # Cabecera de días
+                html_cal += "<tr>" + "".join([f"<th style='border: 1px solid #ddd; padding: 10px; text-align: center; background-color: {color_primario}; color: white; width: 14%;'>{d}</th>" for d in dias_semana]) + "</tr>"
+                
+                for semana in cal_matrix:
+                    html_cal += "<tr>"
+                    for dia in semana:
+                        if dia == 0:
+                            # Día vacío (pertenece al mes anterior/siguiente)
+                            html_cal += "<td style='border: 1px solid #ddd; padding: 5px; height: 120px; background-color: #f9f9f9; opacity: 0.5;'></td>"
+                        else:
+                            # Filtrar eventos de este día exacto
+                            eventos_dia = [e for e in eventos_filtrados if e['inicio'].day == dia]
+                            html_eventos = ""
+                            
+                            for ev in eventos_dia:
+                                if ev['estado'] == 'Activa':
+                                    bg_color = color_primario
+                                    txt_color = "white"
+                                    tachado = ""
+                                else:
+                                    bg_color = "#ff4b4b" # Rojo cancelado
+                                    txt_color = "white"
+                                    tachado = "text-decoration: line-through; opacity: 0.7;"
+                                    
+                                html_eventos += f"""
+                                <div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'>
+                                    <b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br>
+                                    <span style='font-size: 9px;'>📍 {ev['sala']}</span>
+                                </div>
+                                """
                                 
-                            st.markdown(f"""
-                            <div style="border-left: 5px solid {borde_color}; padding: 10px; margin-bottom: 15px; background-color: rgba(128,128,128,0.05); border-radius: 5px; opacity: {opacidad};">
-                                <h4 style="margin:0; color: {borde_color};">{icono} {ev['titulo']}</h4>
-                                <p style="margin:5px 0; font-size: 15px;"><b>⏰ Horario:</b> {ev['inicio'].strftime('%H:%M')} - {ev['fin'].strftime('%H:%M')} &nbsp;&nbsp;|&nbsp;&nbsp; <b>📍 Sala:</b> {ev['sala']}</p>
-                                <p style="margin:0; font-size: 13px; color: gray;"><b>👥 Participantes:</b> {ev['participantes']}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            # Si es hoy, resaltar el número
+                            es_hoy = (dia == now.day and mes_sel == now.month and ano_sel == now.year)
+                            estilo_num = f"background-color: {color_primario}; color: white; border-radius: 50%; padding: 2px 6px; display: inline-block;" if es_hoy else "color: gray; font-weight: bold;"
+                            
+                            html_cal += f"<td style='border: 1px solid #ddd; padding: 5px; vertical-align: top; height: 120px;'>"
+                            html_cal += f"<div style='text-align: right; margin-bottom: 5px;'><span style='{estilo_num}'>{dia}</span></div>"
+                            html_cal += f"{html_eventos}</td>"
+                            
+                    html_cal += "</tr>"
+                    
+                html_cal += "</table>"
+                
+                # Inyectar el calendario HTML interactivo en Streamlit
+                st.markdown(html_cal, unsafe_allow_html=True)
 
         # ----------------------------------------------------
         # TAB 5: DASHBOARD (SECTORES, ESTAMENTO, CARGA)
