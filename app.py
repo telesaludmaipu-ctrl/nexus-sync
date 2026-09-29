@@ -435,12 +435,7 @@ def main_app():
                                     txt_color = "white"
                                     tachado = "text-decoration: line-through; opacity: 0.7;"
                                     
-                                html_eventos += f"""
-                                <div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'>
-                                    <b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br>
-                                    <span style='font-size: 9px;'>📍 {ev['sala']}</span>
-                                </div>
-                                """
+                                html_eventos += f"<div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'><b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br><span style='font-size: 9px;'>📍 {ev['sala']}</span></div>"
                                 
                             # Si es hoy, resaltar el número
                             es_hoy = (dia == now.day and mes_sel == now.month and ano_sel == now.year)
@@ -453,6 +448,9 @@ def main_app():
                     html_cal += "</tr>"
                     
                 html_cal += "</table>"
+                
+                # Limpiar cualquier salto de línea extra que rompa el markdown
+                html_cal = html_cal.replace("\\n", "")
                 
                 # Inyectar el calendario HTML interactivo en Streamlit
                 st.markdown(html_cal, unsafe_allow_html=True)
