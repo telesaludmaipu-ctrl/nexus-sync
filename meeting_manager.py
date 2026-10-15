@@ -1,9 +1,12 @@
 import os
 import datetime
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+import glob
+import streamlit as st
 
 SCOPES = [
     'https://www.googleapis.com/auth/calendar.events',
@@ -11,8 +14,7 @@ SCOPES = [
 ]
 
 SPREADSHEET_ID = '1zfhpffSAT4DRiDWx34SVvsF8FQbKNR-DTm9DKJs6PK4'
-
-import streamlit as st
+CALENDAR_ID = 'telesaludmaipu@gmail.com'
 
 def obtener_servicios_google():
     creds = None
@@ -20,25 +22,54 @@ def obtener_servicios_google():
     token_path = os.path.join(base_dir, 'token.json')
     credentials_path = os.path.join(base_dir, 'credentials.json')
     
-    # 1. Intentar leer token local
+    # 1. Prioridad: Buscar archivo JSON de Cuenta de Servicio (Service Account)
+    sa_files = glob.glob(os.path.join(base_dir, "sistema-de-reuniones-*.json")) + glob.glob(os.path.join(base_dir, "*service_account*.json"))
+    if sa_files and os.path.exists(sa_files[0]):
+        creds = service_account.Credentials.from_service_account_file(sa_files[0], scopes=SCOPES)
+        calendar_service = build('calendar', 'v3', credentials=creds)
+        sheets_service = build('sheets', 'v4', credentials=creds)
+        return calendar_service, sheets_service
+
+    # 2. Buscar Cuenta de Servicio en Secrets de Streamlit Cloud
+    try:
+        if 'gcp_service_account' in st.secrets:
+            sa_info = dict(st.secrets['gcp_service_account'])
+            creds = service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
+            calendar_service = build('calendar', 'v3', credentials=creds)
+            sheets_service = build('sheets', 'v4', credentials=creds)
+            return calendar_service, sheets_service
+    except Exception:
+        pass
+
+    # 3. Fallback: OAuth tradicional (token.json o google_token en secrets)
+    creds = None
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    # 2. Intentar leer desde st.secrets (Nube)
-    elif 'google_token' in st.secrets:
-        token_info = dict(st.secrets['google_token'])
-        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    else:
+        try:
+            if 'google_token' in st.secrets:
+                token_info = dict(st.secrets['google_token'])
+                creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+        except Exception:
+            pass
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             if not os.path.exists(credentials_path):
-                raise FileNotFoundError("Falta credentials.json y no hay st.secrets configurados.")
+                raise FileNotFoundError("Falta archivo de credenciales y no hay st.secrets configurados.")
             flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
             creds = flow.run_local_server(port=0)
             
-        # Guardar localmente solo si no estamos en la nube
-        if not ('google_token' in st.secrets):
+        en_nube = False
+        try:
+            if 'google_token' in st.secrets or 'gcp_service_account' in st.secrets:
+                en_nube = True
+        except Exception:
+            pass
+            
+        if not en_nube:
             with open(token_path, 'w') as token:
                 token.write(creds.to_json())
 
@@ -116,7 +147,7 @@ def actualizar_participantes(calendar_service, sheets_service, event_id, fila_in
     attendees = [{'email': email} for email in emails_participantes]
     try:
         calendar_service.events().patch(
-            calendarId='primary', eventId=event_id, 
+            calendarId=CALENDAR_ID, eventId=event_id, 
             body={'attendees': attendees}, sendUpdates='all'
         ).execute()
     except Exception as e:
@@ -160,7 +191,7 @@ def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio
         },
     }
     
-    event_result = calendar_service.events().insert(calendarId='primary', body=evento, sendUpdates='all').execute()
+    event_result = calendar_service.events().insert(calendarId=CALENDAR_ID, body=evento, sendUpdates='all').execute()
     event_id = event_result['id']
 
     participantes_str = ", ".join(emails_participantes)
@@ -174,7 +205,7 @@ def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio
 def cancelar_reunion(calendar_service, sheets_service, event_id, fila_index):
     # 1. Eliminar del calendario
     try:
-        calendar_service.events().delete(calendarId='primary', eventId=event_id, sendUpdates='all').execute()
+        calendar_service.events().delete(calendarId=CALENDAR_ID, eventId=event_id, sendUpdates='all').execute()
     except Exception as e:
         print(f"Aviso: El evento ya no estaba en el calendario o hubo un error: {e}")
     
