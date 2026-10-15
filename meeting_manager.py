@@ -162,19 +162,20 @@ def obtener_credenciales_smtp():
 
 def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, event_id=None, metodo='REQUEST'):
     if not emails_participantes:
-        return
+        return True, "Sin participantes"
         
     smtp_user, smtp_pass = obtener_credenciales_smtp()
     if not smtp_user or not smtp_pass:
-        print("Aviso: No hay credenciales SMTP configuradas.")
-        return
+        msg_err = "No se encontraron credenciales [smtp] en los Secrets de Streamlit."
+        print(f"Aviso: {msg_err}")
+        return False, msg_err
 
     try:
         dt_ini = datetime.datetime.fromisoformat(fecha_inicio_iso)
         dt_fin = datetime.datetime.fromisoformat(fecha_fin_iso)
     except Exception as e:
         print(f"Error parseando fecha para email: {e}")
-        return
+        return False, str(e)
         
     fecha_legible = dt_ini.strftime("%d/%m/%Y")
     hora_ini_legible = dt_ini.strftime("%H:%M")
@@ -308,8 +309,10 @@ def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, email
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, emails_participantes, msg.as_string())
         print(f"Invitaciones enviadas con éxito a: {', '.join(emails_participantes)}")
+        return True, "Invitación enviada con éxito"
     except Exception as e:
         print(f"Error al enviar correo SMTP: {e}")
+        return False, str(e)
 
 def actualizar_participantes(calendar_service, sheets_service, event_id, fila_index, emails_participantes):
     """Actualiza los invitados en Calendar, Sheets y reenvía correos."""
@@ -337,9 +340,10 @@ def actualizar_participantes(calendar_service, sheets_service, event_id, fila_in
             sala = reunion[0][1]
             inicio_iso = reunion[0][2]
             fin_iso = reunion[0][3]
-            enviar_invitacion_email(titulo, sala, inicio_iso, fin_iso, emails_participantes, "Administrador", event_id, metodo='REQUEST')
+            return enviar_invitacion_email(titulo, sala, inicio_iso, fin_iso, emails_participantes, "Administrador", event_id, metodo='REQUEST')
     except Exception as e:
         print(f"Error reenviando invitación: {e}")
+        return False, str(e)
 
 def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario):
     participantes_str = ", ".join(emails_participantes)
@@ -378,7 +382,7 @@ def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio
         valueInputOption='USER_ENTERED', body={'values': fila}).execute()
 
     # 3. Enviar invitaciones por correo con archivo .ics interactivo
-    enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, event_id, metodo='REQUEST')
+    return enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, event_id, metodo='REQUEST')
 
 def cancelar_reunion(calendar_service, sheets_service, event_id, fila_index):
     # 1. Obtener datos antes de cancelar para mandar notificación

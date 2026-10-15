@@ -30,6 +30,27 @@ st.set_page_config(page_title="Nexus Sync - Gestión de Reuniones", page_icon=lo
 def rgb_to_hex(rgb):
     return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
 
+def parsear_fecha_segura(valor):
+    if not valor:
+        return None
+    val = str(valor).replace("T", " ").strip()
+    partes = val.split(" ")
+    if len(partes) == 2:
+        d, t = partes
+        t_nums = t.split(":")
+        if len(t_nums) >= 2:
+            hh = t_nums[0].zfill(2)
+            mm = t_nums[1].zfill(2)
+            ss = t_nums[2].zfill(2) if len(t_nums) > 2 else "00"
+            val = f"{d} {hh}:{mm}:{ss}"
+    try:
+        return datetime.datetime.strptime(val[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        try:
+            return datetime.datetime.fromisoformat(str(valor))
+        except Exception:
+            return None
+
 @st.cache_data
 def extraer_color_dominante(ruta_logo):
     try:
@@ -141,6 +162,7 @@ def main_app():
     if logo_path:
         st.sidebar.image(logo_path, use_container_width=True)
     st.sidebar.title("Panel Administrativo")
+    st.sidebar.caption("⚡ Motor v2.0 (Service Account)")
     st.sidebar.write(f"Conectado como: **{st.session_state['usuario_actual']}**")
     st.sidebar.write(f"Rol: **{st.session_state['rol_actual']}**")
     
@@ -232,15 +254,12 @@ def main_app():
                     choque = False
                     for r in reuniones_existentes:
                         if len(r) >= 8 and r[7] == 'Activa' and r[2] == sala_final:
-                            try:
-                                r_inicio = datetime.datetime.strptime(r[3].replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
-                                r_fin = datetime.datetime.strptime(r[4].replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
-                                # Fórmula de superposición de tiempos: (Start A < End B) and (End A > Start B)
+                            r_inicio = parsear_fecha_segura(r[3])
+                            r_fin = parsear_fecha_segura(r[4])
+                            if r_inicio and r_fin:
                                 if (inicio_dt < r_fin) and (fin_dt > r_inicio):
                                     choque = True
                                     break
-                            except Exception:
-                                pass
                                 
                     if choque:
                         st.error(f"❌ ¡Choque de Horario! La sala '{sala_final}' ya tiene una reunión activa en ese bloque de tiempo. Cancela la anterior o elige otra sala/horario.")
@@ -256,8 +275,11 @@ def main_app():
                         fin_iso = fin_dt.isoformat()
                         
                         try:
-                            agendar_reunion(cal_service, sh_service, titulo, sala_final, inicio_iso, fin_iso, emails, st.session_state['usuario_actual'])
-                            st.success("🎉 Reunión agendada exitosamente. El formulario se ha limpiado para la próxima reunión.")
+                            ok_mail, msg_mail = agendar_reunion(cal_service, sh_service, titulo, sala_final, inicio_iso, fin_iso, emails, st.session_state['usuario_actual'])
+                            if ok_mail:
+                                st.success("🎉 Reunión agendada exitosamente e invitaciones enviadas a los correos.")
+                            else:
+                                st.warning(f"⚠️ Reunión registrada en calendario y planilla, pero hubo un detalle con el correo: {msg_mail}")
                         except Exception as e:
                             st.error(f"Error: {e}")
 
@@ -364,12 +386,9 @@ def main_app():
             eventos = []
             for fila in reuniones_data:
                 if len(fila) >= 9 and fila[7] in ['Activa', 'Cancelada']:
-                    try:
-                        fecha_str = fila[3].replace("T", " ")[:19]
-                        fin_str = fila[4].replace("T", " ")[:19]
-                        dt_inicio = datetime.datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
-                        dt_fin = datetime.datetime.strptime(fin_str, "%Y-%m-%d %H:%M:%S")
-                        
+                    dt_inicio = parsear_fecha_segura(fila[3])
+                    dt_fin = parsear_fecha_segura(fila[4])
+                    if dt_inicio and dt_fin:
                         eventos.append({
                             "titulo": fila[1],
                             "sala": fila[2],
@@ -378,8 +397,6 @@ def main_app():
                             "participantes": fila[5],
                             "estado": fila[7]
                         })
-                    except Exception:
-                        pass
                         
             if not eventos:
                 st.info("No hay reuniones programadas en el sistema.")
@@ -465,7 +482,8 @@ def main_app():
             data_graficos = []
             for fila in reuniones_data:
                 if len(fila) < 9 or fila[7] == 'Cancelada': continue
-                inicio = datetime.datetime.fromisoformat(fila[3])
+                inicio = parsear_fecha_segura(fila[3])
+                if not inicio: continue
                 semana = inicio.strftime("%Y-W%W")
                 correos_participantes = [c.strip() for c in fila[5].split(",") if c.strip()]
                 for c in correos_participantes:
