@@ -217,7 +217,7 @@ def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, email
         f"SUMMARY:{titulo}\r\n"
         f"LOCATION:{sala}\r\n"
         f"DESCRIPTION:Reunión convocada por: {usuario}\\nSala: {sala}\\nParticipantes: {', '.join(emails_participantes)}\r\n"
-        f"ORGANIZER;CN=\"Nexus Sync - CESFAM\":mailto:{smtp_user}\r\n"
+        f"ORGANIZER;CN=\"CESFAM Maipú\":mailto:{smtp_user}\r\n"
         f"{att_block}\r\n"
         f"STATUS:{status}\r\n"
         "SEQUENCE:0\r\n"
@@ -246,7 +246,7 @@ def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, email
         <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
             <div style="background-color: {color_header}; color: #ffffff; padding: 20px; text-align: center;">
                 <h2 style="margin: 0;">{titulo_header}</h2>
-                <p style="margin: 5px 0 0 0; opacity: 0.9;">Nexus Sync - Gestión de Reuniones CESFAM</p>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">CESFAM Maipú - Gestión de Reuniones</p>
             </div>
             <div style="padding: 25px;">
                 <h3 style="color: #1f2937; margin-top: 0;">{titulo}</h3>
@@ -277,7 +277,7 @@ def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, email
                 </div>
             </div>
             <div style="background-color: #f9fafb; padding: 15px; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #e5e7eb;">
-                Nexus Soluciones | Innovación y Gestión Tecnológica
+                CESFAM Maipú | Coordinación y Gestión Clínica
             </div>
         </div>
     </body>
@@ -286,7 +286,7 @@ def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, email
 
     msg = MIMEMultipart("mixed")
     msg["Subject"] = asunto
-    msg["From"] = f"Nexus Sync <{smtp_user}>"
+    msg["From"] = f"CESFAM Maipú <{smtp_user}>"
     msg["To"] = ", ".join(emails_participantes)
 
     msg_alt = MIMEMultipart("alternative")

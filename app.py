@@ -401,11 +401,17 @@ def main_app():
             if not eventos:
                 st.info("No hay reuniones programadas en el sistema.")
             else:
-                col_m, col_y, _ = st.columns([1, 1, 2])
+                now = datetime.datetime.now()
+                
+                # Buscar la próxima reunión activa futura para el contador regresivo
+                reuniones_futuras = [e for e in eventos if e['estado'] == 'Activa' and e['inicio'] > now]
+                reuniones_futuras.sort(key=lambda x: x['inicio'])
+                proxima_reunion = reuniones_futuras[0] if reuniones_futuras else None
+
+                col_m, col_y, col_count = st.columns([1, 1, 2])
                 meses_es = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 
                             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
                 
-                now = datetime.datetime.now()
                 anos_disponibles = sorted(list(set([e['inicio'].year for e in eventos])))
                 if now.year not in anos_disponibles:
                     anos_disponibles.append(now.year)
@@ -415,6 +421,28 @@ def main_app():
                     mes_sel = st.selectbox("Filtrar por Mes", options=list(meses_es.keys()), format_func=lambda x: meses_es[x], index=now.month - 1)
                 with col_y:
                     ano_sel = st.selectbox("Filtrar por Año", options=anos_disponibles, index=anos_disponibles.index(now.year))
+                    
+                with col_count:
+                    if proxima_reunion:
+                        delta = proxima_reunion['inicio'] - now
+                        dias = delta.days
+                        horas = delta.seconds // 3600
+                        mins = (delta.seconds % 3600) // 60
+                        
+                        st.markdown(f"""
+                        <div style="background: linear-gradient(135deg, {color_primario} 0%, #0f172a 100%); color: white; padding: 10px 14px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;">⏳ Próxima Reunión (Cuenta Regresiva)</div>
+                            <div style="font-size: 18px; font-weight: bold; margin: 2px 0;">{dias}d {horas}h {mins}m restantes</div>
+                            <div style="font-size: 12px; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">📌 {proxima_reunion['titulo']} &nbsp;|&nbsp; 📍 {proxima_reunion['sala']}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                        <div style="background-color: #f1f5f9; color: #475569; padding: 12px 14px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                            <div style="font-size: 11px; text-transform: uppercase;">⏳ Próxima Reunión</div>
+                            <div style="font-size: 15px; font-weight: bold; color: #10b981;">✅ Sin reuniones pendientes a futuro</div>
+                        </div>
+                        """, unsafe_allow_html=True)
                     
                 st.write("---")
                 eventos_filtrados = [e for e in eventos if e['inicio'].month == mes_sel and e['inicio'].year == ano_sel]
@@ -489,6 +517,7 @@ def main_app():
                 for c in correos_participantes:
                     if c in mapeo_personal:
                         data_graficos.append({
+                            "Fecha": inicio.date(),
                             "Semana": semana,
                             "Sector": mapeo_personal[c]['sector'],
                             "Estamento": mapeo_personal[c]['estamento'],
@@ -498,8 +527,17 @@ def main_app():
             if data_graficos:
                 df = pd.DataFrame(data_graficos)
                 st.markdown("### 🔍 Filtros de Análisis")
-                col_filt1, col_filt2 = st.columns(2)
                 
+                min_fecha = df['Fecha'].min()
+                max_fecha = df['Fecha'].max()
+                
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    f_desde = st.date_input("🗓️ Fecha Desde (Inicio de rango)", value=min_fecha)
+                with col_f2:
+                    f_hasta = st.date_input("🗓️ Fecha Hasta (Fin de rango)", value=max_fecha)
+                
+                col_filt1, col_filt2 = st.columns(2)
                 sectores_unicos = sorted(df['Sector'].unique())
                 estamentos_unicos = sorted(df['Estamento'].unique())
                 
@@ -508,7 +546,12 @@ def main_app():
                 with col_filt2:
                     sel_estamentos = st.multiselect("Filtrar por Estamento", estamentos_unicos, default=estamentos_unicos)
                 
-                df_filtrado = df[df['Sector'].isin(sel_sectores) & df['Estamento'].isin(sel_estamentos)]
+                df_filtrado = df[
+                    (df['Fecha'] >= f_desde) & 
+                    (df['Fecha'] <= f_hasta) & 
+                    (df['Sector'].isin(sel_sectores)) & 
+                    (df['Estamento'].isin(sel_estamentos))
+                ]
                 st.write("---")
                 
                 if not df_filtrado.empty:
