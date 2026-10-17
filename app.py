@@ -215,9 +215,9 @@ def main_app():
     # CONTROL DE ACCESOS SEGÚN ROL
     es_directivo = (st.session_state.get('rol_actual') == 'Directivo')
     
-    nombres_tabs = ["📌 Agendar Reunión", "🗓 Mis Reuniones", "⚙️ Gestión de Personal y Salas"]
+    nombres_tabs = ["📌 Agendar Reunión", "🗓 Mis Reuniones", "📅 Calendario", "⚙️ Gestión de Personal y Salas"]
     if es_directivo:
-        nombres_tabs.extend(["📅 Calendario", "📊 Dashboard", "🛡️ Autorizaciones", "🔐 Gestión de Usuarios"])
+        nombres_tabs.extend(["📊 Dashboard", "🛡️ Autorizaciones", "🔐 Gestión de Usuarios"])
 
     tabs = st.tabs(nombres_tabs)
 
@@ -407,9 +407,193 @@ def main_app():
             st.info("No hay reuniones activas registradas en la base de datos.")
 
     # ----------------------------------------------------
-    # TAB 3: GESTIÓN (AGREGAR PERSONAL)
+    # TAB 3: AGENDA INSTITUCIONAL (CALENDARIO) (VISTA NATIVA GARANTIZADA)
     # ----------------------------------------------------
     with tabs[2]:
+        st.header("📅 Agenda Institucional")
+        st.write("Explora las reuniones históricas y futuras agrupadas por día.")
+        
+        reuniones_data = obtener_datos(sh_service, 'Reuniones!A2:I')
+        
+        eventos = []
+        for fila in reuniones_data:
+            if len(fila) >= 9 and fila[7] in ['Activa', 'Realizada', 'Cancelada']:
+                dt_inicio = parsear_fecha_segura(fila[3])
+                dt_fin = parsear_fecha_segura(fila[4])
+                if dt_inicio and dt_fin:
+                    eventos.append({
+                        "titulo": fila[1],
+                        "sala": fila[2],
+                        "inicio": dt_inicio,
+                        "fin": dt_fin,
+                        "participantes": fila[5],
+                        "estado": fila[7]
+                    })
+                    
+        if not eventos:
+            st.info("No hay reuniones programadas en el sistema.")
+        else:
+            now = datetime.datetime.now()
+            
+            # Inicializar estado del calendario en session_state para sincronización con flechas
+            if 'cal_mes' not in st.session_state:
+                st.session_state['cal_mes'] = now.month
+            if 'cal_ano' not in st.session_state:
+                st.session_state['cal_ano'] = now.year
+
+            # Buscar la próxima reunión activa futura para el contador regresivo
+            reuniones_futuras = [e for e in eventos if e['estado'] == 'Activa' and e['inicio'] > now]
+            reuniones_futuras.sort(key=lambda x: x['inicio'])
+            proxima_reunion = reuniones_futuras[0] if reuniones_futuras else None
+
+            col_m, col_y, col_count = st.columns([1, 1, 2])
+            meses_es = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 
+                        7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+            
+            anos_disponibles = sorted(list(set([e['inicio'].year for e in eventos] + [now.year, now.year + 1, now.year - 1])))
+            if st.session_state['cal_ano'] not in anos_disponibles:
+                anos_disponibles.append(st.session_state['cal_ano'])
+                anos_disponibles.sort()
+                
+            with col_m:
+                def actualizar_mes():
+                    st.session_state['cal_mes'] = st.session_state['sel_box_mes']
+
+                mes_sel = st.selectbox(
+                    "Filtrar por Mes", 
+                    options=list(meses_es.keys()), 
+                    format_func=lambda x: meses_es[x], 
+                    index=st.session_state['cal_mes'] - 1,
+                    key="sel_box_mes",
+                    on_change=actualizar_mes
+                )
+            with col_y:
+                def actualizar_ano():
+                    st.session_state['cal_ano'] = st.session_state['sel_box_ano']
+
+                ano_sel = st.selectbox(
+                    "Filtrar por Año", 
+                    options=anos_disponibles, 
+                    index=anos_disponibles.index(st.session_state['cal_ano']),
+                    key="sel_box_ano",
+                    on_change=actualizar_ano
+                )
+                
+            with col_count:
+                if proxima_reunion:
+                    delta = proxima_reunion['inicio'] - now
+                    dias = delta.days
+                    horas = delta.seconds // 3600
+                    mins = (delta.seconds % 3600) // 60
+                    
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, {color_primario} 0%, #0f172a 100%); color: white; padding: 10px 14px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;">⏳ Próxima Reunión (Cuenta Regresiva)</div>
+                        <div style="font-size: 18px; font-weight: bold; margin: 2px 0;">{dias}d {horas}h {mins}m restantes</div>
+                        <div style="font-size: 12px; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">📌 {proxima_reunion['titulo']} &nbsp;|&nbsp; 📍 {proxima_reunion['sala']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown("""
+                    <div style="background-color: #f1f5f9; color: #475569; padding: 12px 14px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <div style="font-size: 11px; text-transform: uppercase;">⏳ Próxima Reunión</div>
+                        <div style="font-size: 15px; font-weight: bold; color: #10b981;">✅ Sin reuniones pendientes a futuro</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+            st.write("---")
+
+            # --- CONTROL DE NAVEGACIÓN CON FLECHAS Y TÍTULO SOBRE LA MATRIZ ---
+            def paso_mes(delta):
+                m = st.session_state['cal_mes'] + delta
+                a = st.session_state['cal_ano']
+                if m < 1:
+                    st.session_state['cal_mes'] = 12
+                    st.session_state['cal_ano'] = a - 1
+                elif m > 12:
+                    st.session_state['cal_mes'] = 1
+                    st.session_state['cal_ano'] = a + 1
+                else:
+                    st.session_state['cal_mes'] = m
+
+            col_arr_izq, col_arr_tit, col_arr_der = st.columns([1, 4, 1])
+            with col_arr_izq:
+                if st.button("◀ Mes Anterior", key="btn_prev_mes", use_container_width=True):
+                    paso_mes(-1)
+                    st.rerun()
+            with col_arr_tit:
+                st.markdown(f"<h3 style='text-align: center; margin: 0; color: {color_primario};'>🗓️ {meses_es[st.session_state['cal_mes']]} de {st.session_state['cal_ano']}</h3>", unsafe_allow_html=True)
+            with col_arr_der:
+                if st.button("Mes Siguiente ▶", key="btn_next_mes", use_container_width=True):
+                    paso_mes(1)
+                    st.rerun()
+
+            mes_actual = st.session_state['cal_mes']
+            ano_actual = st.session_state['cal_ano']
+
+            eventos_filtrados = [e for e in eventos if e['inicio'].month == mes_actual and e['inicio'].year == ano_actual]
+            eventos_filtrados.sort(key=lambda x: x['inicio'])
+            
+            if not eventos_filtrados:
+                st.warning(f"No hay reuniones registradas en {meses_es[mes_actual]} de {ano_actual}.")
+            
+            # --- RENDERIZADO DEL CALENDARIO HTML MATRIZ ---
+            cal_matrix = calendar.monthcalendar(ano_actual, mes_actual)
+            dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+            
+            html_cal = "<table style='width:100%; border-collapse: collapse; margin-top: 10px; font-family: sans-serif;'>"
+            # Cabecera de días
+            html_cal += "<tr>" + "".join([f"<th style='border: 1px solid #ddd; padding: 10px; text-align: center; background-color: {color_primario}; color: white; width: 14%;'>{d}</th>" for d in dias_semana]) + "</tr>"
+            
+            for semana in cal_matrix:
+                html_cal += "<tr>"
+                for dia in semana:
+                    if dia == 0:
+                        # Día vacío (pertenece al mes anterior/siguiente)
+                        html_cal += "<td style='border: 1px solid #ddd; padding: 5px; height: 120px; background-color: #f9f9f9; opacity: 0.5;'></td>"
+                    else:
+                        # Filtrar eventos de este día exacto
+                        eventos_dia = [e for e in eventos_filtrados if e['inicio'].day == dia]
+                        html_eventos = ""
+                        
+                        for ev in eventos_dia:
+                            if ev['estado'] == 'Activa':
+                                bg_color = color_primario
+                                txt_color = "white"
+                                tachado = ""
+                            elif ev['estado'] == 'Realizada':
+                                bg_color = "#10b981" # Verde completada
+                                txt_color = "white"
+                                tachado = ""
+                            else:
+                                bg_color = "#ff4b4b" # Rojo cancelado
+                                txt_color = "white"
+                                tachado = "text-decoration: line-through; opacity: 0.7;"
+                                
+                            html_eventos += f"<div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'><b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br><span style='font-size: 9px;'>📍 {ev['sala']} ({ev['estado']})</span></div>"
+                            
+                        # Si es hoy, resaltar el número
+                        es_hoy = (dia == now.day and mes_actual == now.month and ano_actual == now.year)
+                        estilo_num = f"background-color: {color_primario}; color: white; border-radius: 50%; padding: 2px 6px; display: inline-block;" if es_hoy else "color: gray; font-weight: bold;"
+                        
+                        html_cal += f"<td style='border: 1px solid #ddd; padding: 5px; vertical-align: top; height: 120px;'>"
+                        html_cal += f"<div style='text-align: right; margin-bottom: 5px;'><span style='{estilo_num}'>{dia}</span></div>"
+                        html_cal += f"{html_eventos}</td>"
+                        
+                html_cal += "</tr>"
+                
+            html_cal += "</table>"
+            
+            # Limpiar cualquier salto de línea extra que rompa el markdown
+            html_cal = html_cal.replace("\\n", "")
+            
+            # Inyectar el calendario HTML interactivo en Streamlit
+            st.markdown(html_cal, unsafe_allow_html=True)
+
+    # ----------------------------------------------------
+    # TAB 4: GESTIÓN (AGREGAR PERSONAL)
+    # ----------------------------------------------------
+    with tabs[3]:
         st.subheader("Agregar Nuevo Personal al Sistema")
         
         # Extraer estamentos únicos existentes en la base de datos
@@ -438,190 +622,6 @@ def main_app():
 
     # TABS EXCLUSIVOS PARA DIRECTIVOS
     if es_directivo:
-        # ----------------------------------------------------
-        # TAB 4: AGENDA INSTITUCIONAL (VISTA NATIVA GARANTIZADA)
-        # ----------------------------------------------------
-        with tabs[3]:
-            st.header("📅 Agenda Institucional")
-            st.write("Explora las reuniones históricas y futuras agrupadas por día.")
-            
-            reuniones_data = obtener_datos(sh_service, 'Reuniones!A2:I')
-            
-            eventos = []
-            for fila in reuniones_data:
-                if len(fila) >= 9 and fila[7] in ['Activa', 'Realizada', 'Cancelada']:
-                    dt_inicio = parsear_fecha_segura(fila[3])
-                    dt_fin = parsear_fecha_segura(fila[4])
-                    if dt_inicio and dt_fin:
-                        eventos.append({
-                            "titulo": fila[1],
-                            "sala": fila[2],
-                            "inicio": dt_inicio,
-                            "fin": dt_fin,
-                            "participantes": fila[5],
-                            "estado": fila[7]
-                        })
-                        
-            if not eventos:
-                st.info("No hay reuniones programadas en el sistema.")
-            else:
-                now = datetime.datetime.now()
-                
-                # Inicializar estado del calendario en session_state para sincronización con flechas
-                if 'cal_mes' not in st.session_state:
-                    st.session_state['cal_mes'] = now.month
-                if 'cal_ano' not in st.session_state:
-                    st.session_state['cal_ano'] = now.year
-
-                # Buscar la próxima reunión activa futura para el contador regresivo
-                reuniones_futuras = [e for e in eventos if e['estado'] == 'Activa' and e['inicio'] > now]
-                reuniones_futuras.sort(key=lambda x: x['inicio'])
-                proxima_reunion = reuniones_futuras[0] if reuniones_futuras else None
-
-                col_m, col_y, col_count = st.columns([1, 1, 2])
-                meses_es = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 
-                            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
-                
-                anos_disponibles = sorted(list(set([e['inicio'].year for e in eventos] + [now.year, now.year + 1, now.year - 1])))
-                if st.session_state['cal_ano'] not in anos_disponibles:
-                    anos_disponibles.append(st.session_state['cal_ano'])
-                    anos_disponibles.sort()
-                    
-                with col_m:
-                    def actualizar_mes():
-                        st.session_state['cal_mes'] = st.session_state['sel_box_mes']
-
-                    mes_sel = st.selectbox(
-                        "Filtrar por Mes", 
-                        options=list(meses_es.keys()), 
-                        format_func=lambda x: meses_es[x], 
-                        index=st.session_state['cal_mes'] - 1,
-                        key="sel_box_mes",
-                        on_change=actualizar_mes
-                    )
-                with col_y:
-                    def actualizar_ano():
-                        st.session_state['cal_ano'] = st.session_state['sel_box_ano']
-
-                    ano_sel = st.selectbox(
-                        "Filtrar por Año", 
-                        options=anos_disponibles, 
-                        index=anos_disponibles.index(st.session_state['cal_ano']),
-                        key="sel_box_ano",
-                        on_change=actualizar_ano
-                    )
-                    
-                with col_count:
-                    if proxima_reunion:
-                        delta = proxima_reunion['inicio'] - now
-                        dias = delta.days
-                        horas = delta.seconds // 3600
-                        mins = (delta.seconds % 3600) // 60
-                        
-                        st.markdown(f"""
-                        <div style="background: linear-gradient(135deg, {color_primario} 0%, #0f172a 100%); color: white; padding: 10px 14px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;">⏳ Próxima Reunión (Cuenta Regresiva)</div>
-                            <div style="font-size: 18px; font-weight: bold; margin: 2px 0;">{dias}d {horas}h {mins}m restantes</div>
-                            <div style="font-size: 12px; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">📌 {proxima_reunion['titulo']} &nbsp;|&nbsp; 📍 {proxima_reunion['sala']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.markdown("""
-                        <div style="background-color: #f1f5f9; color: #475569; padding: 12px 14px; border-radius: 8px; border: 1px solid #e2e8f0;">
-                            <div style="font-size: 11px; text-transform: uppercase;">⏳ Próxima Reunión</div>
-                            <div style="font-size: 15px; font-weight: bold; color: #10b981;">✅ Sin reuniones pendientes a futuro</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                st.write("---")
-
-                # --- CONTROL DE NAVEGACIÓN CON FLECHAS Y TÍTULO SOBRE LA MATRIZ ---
-                def paso_mes(delta):
-                    m = st.session_state['cal_mes'] + delta
-                    a = st.session_state['cal_ano']
-                    if m < 1:
-                        st.session_state['cal_mes'] = 12
-                        st.session_state['cal_ano'] = a - 1
-                    elif m > 12:
-                        st.session_state['cal_mes'] = 1
-                        st.session_state['cal_ano'] = a + 1
-                    else:
-                        st.session_state['cal_mes'] = m
-
-                col_arr_izq, col_arr_tit, col_arr_der = st.columns([1, 4, 1])
-                with col_arr_izq:
-                    if st.button("◀ Mes Anterior", key="btn_prev_mes", use_container_width=True):
-                        paso_mes(-1)
-                        st.rerun()
-                with col_arr_tit:
-                    st.markdown(f"<h3 style='text-align: center; margin: 0; color: {color_primario};'>🗓️ {meses_es[st.session_state['cal_mes']]} de {st.session_state['cal_ano']}</h3>", unsafe_allow_html=True)
-                with col_arr_der:
-                    if st.button("Mes Siguiente ▶", key="btn_next_mes", use_container_width=True):
-                        paso_mes(1)
-                        st.rerun()
-
-                mes_actual = st.session_state['cal_mes']
-                ano_actual = st.session_state['cal_ano']
-
-                eventos_filtrados = [e for e in eventos if e['inicio'].month == mes_actual and e['inicio'].year == ano_actual]
-                eventos_filtrados.sort(key=lambda x: x['inicio'])
-                
-                if not eventos_filtrados:
-                    st.warning(f"No hay reuniones registradas en {meses_es[mes_actual]} de {ano_actual}.")
-                
-                # --- RENDERIZADO DEL CALENDARIO HTML MATRIZ ---
-                cal_matrix = calendar.monthcalendar(ano_actual, mes_actual)
-                dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-                
-                html_cal = "<table style='width:100%; border-collapse: collapse; margin-top: 10px; font-family: sans-serif;'>"
-                # Cabecera de días
-                html_cal += "<tr>" + "".join([f"<th style='border: 1px solid #ddd; padding: 10px; text-align: center; background-color: {color_primario}; color: white; width: 14%;'>{d}</th>" for d in dias_semana]) + "</tr>"
-                
-                for semana in cal_matrix:
-                    html_cal += "<tr>"
-                    for dia in semana:
-                        if dia == 0:
-                            # Día vacío (pertenece al mes anterior/siguiente)
-                            html_cal += "<td style='border: 1px solid #ddd; padding: 5px; height: 120px; background-color: #f9f9f9; opacity: 0.5;'></td>"
-                        else:
-                            # Filtrar eventos de este día exacto
-                            eventos_dia = [e for e in eventos_filtrados if e['inicio'].day == dia]
-                            html_eventos = ""
-                            
-                            for ev in eventos_dia:
-                                if ev['estado'] == 'Activa':
-                                    bg_color = color_primario
-                                    txt_color = "white"
-                                    tachado = ""
-                                elif ev['estado'] == 'Realizada':
-                                    bg_color = "#10b981" # Verde completada
-                                    txt_color = "white"
-                                    tachado = ""
-                                else:
-                                    bg_color = "#ff4b4b" # Rojo cancelado
-                                    txt_color = "white"
-                                    tachado = "text-decoration: line-through; opacity: 0.7;"
-                                    
-                                html_eventos += f"<div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'><b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br><span style='font-size: 9px;'>📍 {ev['sala']} ({ev['estado']})</span></div>"
-                                
-                            # Si es hoy, resaltar el número
-                            es_hoy = (dia == now.day and mes_actual == now.month and ano_actual == now.year)
-                            estilo_num = f"background-color: {color_primario}; color: white; border-radius: 50%; padding: 2px 6px; display: inline-block;" if es_hoy else "color: gray; font-weight: bold;"
-                            
-                            html_cal += f"<td style='border: 1px solid #ddd; padding: 5px; vertical-align: top; height: 120px;'>"
-                            html_cal += f"<div style='text-align: right; margin-bottom: 5px;'><span style='{estilo_num}'>{dia}</span></div>"
-                            html_cal += f"{html_eventos}</td>"
-                            
-                    html_cal += "</tr>"
-                    
-                html_cal += "</table>"
-                
-                # Limpiar cualquier salto de línea extra que rompa el markdown
-                html_cal = html_cal.replace("\\n", "")
-                
-                # Inyectar el calendario HTML interactivo en Streamlit
-                st.markdown(html_cal, unsafe_allow_html=True)
-
         # ----------------------------------------------------
         # TAB 5: DASHBOARD (SECTORES, ESTAMENTO, CARGA)
         # ----------------------------------------------------
@@ -780,20 +780,26 @@ def main_app():
                         with col_acc1:
                             if st.button("✅ Autorizar y Enviar a Todo el Equipo", key=f"btn_aut_{idx}", type="primary", use_container_width=True):
                                 with st.spinner("Creando evento en Google Calendar y despachando invitaciones por correo..."):
-                                    ok_aut, msg_aut = autorizar_reunion(
-                                        cal_service, sh_service, idx, titulo_sol, sala_sol,
-                                        inicio_sol, fin_sol, correos_participantes, creador_sol
-                                    )
-                                    if ok_aut:
-                                        st.success(f"🎉 ¡Reunión autorizada con éxito! {msg_aut}")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Error autorizando reunión: {msg_aut}")
+                                    try:
+                                        ok_aut, msg_aut = autorizar_reunion(
+                                            cal_service, sh_service, idx, titulo_sol, sala_sol,
+                                            inicio_sol, fin_sol, correos_participantes, creador_sol
+                                        )
+                                        if ok_aut:
+                                            st.success(f"🎉 ¡Reunión autorizada con éxito! {msg_aut}")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Error autorizando reunión: {msg_aut}")
+                                    except Exception as e:
+                                        st.error(f"Error al autorizar la reunión: {e}")
                         with col_acc2:
                             if st.button("❌ Rechazar Solicitud", key=f"btn_rech_{idx}", use_container_width=True):
-                                ok_rech, msg_rech = rechazar_reunion(sh_service, idx, titulo_sol, creador_sol)
-                                st.warning("La solicitud ha sido rechazada.")
-                                st.rerun()
+                                try:
+                                    ok_rech, msg_rech = rechazar_reunion(sh_service, idx, titulo_sol, creador_sol)
+                                    st.warning("La solicitud ha sido rechazada.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al rechazar la reunión: {e}")
 
         # ----------------------------------------------------
         # TAB 7: GESTIÓN DE USUARIOS

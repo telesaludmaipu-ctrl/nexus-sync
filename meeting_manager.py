@@ -23,6 +23,24 @@ CALENDAR_ID = 'telesaludmaipu@gmail.com'
 SMTP_USER_DEFAULT = ''
 SMTP_PASS_DEFAULT = ''
 
+def normalizar_fecha_iso(fecha_str):
+    """Convierte cualquier formato de fecha/hora (con espacios o dígitos simples) a ISO 8601 estricto con 'T' para Google Calendar API."""
+    if not fecha_str:
+        return ""
+    val = str(fecha_str).strip()
+    if " " in val and "T" not in val:
+        val = val.replace(" ", "T")
+    partes = val.split("T")
+    if len(partes) == 2:
+        d, t = partes
+        t_nums = t.split(":")
+        if len(t_nums) >= 2:
+            hh = t_nums[0].zfill(2)
+            mm = t_nums[1].zfill(2)
+            ss = t_nums[2].zfill(2) if len(t_nums) > 2 else "00"
+            val = f"{d}T{hh}:{mm}:{ss}"
+    return val
+
 def obtener_servicios_google():
     creds = None
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -289,6 +307,8 @@ def enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, email
     if not emails_participantes:
         return True, "Sin participantes"
         
+    fecha_inicio_iso = normalizar_fecha_iso(fecha_inicio_iso)
+    fecha_fin_iso = normalizar_fecha_iso(fecha_fin_iso)
     smtp_user, smtp_pass = obtener_credenciales_smtp()
     if not smtp_user or not smtp_pass:
         msg_err = "No se encontraron credenciales [smtp] en los Secrets de Streamlit."
@@ -463,8 +483,8 @@ def actualizar_participantes(calendar_service, sheets_service, event_id, fila_in
         if reunion and len(reunion[0]) >= 4:
             titulo = reunion[0][0]
             sala = reunion[0][1]
-            inicio_iso = reunion[0][2]
-            fin_iso = reunion[0][3]
+            inicio_iso = normalizar_fecha_iso(reunion[0][2])
+            fin_iso = normalizar_fecha_iso(reunion[0][3])
             return enviar_invitacion_email(titulo, sala, inicio_iso, fin_iso, emails_participantes, "Administrador", event_id, metodo='REQUEST')
     except Exception as e:
         print(f"Error reenviando invitación: {e}")
@@ -486,6 +506,8 @@ def solicitar_reunion_pendiente(sheets_service, titulo, sala, fecha_inicio_iso, 
     return True, "Solicitud enviada exitosamente. La reunión ha quedado PENDIENTE DE AUTORIZACIÓN por la Dirección."
 
 def autorizar_reunion(calendar_service, sheets_service, fila_index, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario):
+    fecha_inicio_iso = normalizar_fecha_iso(fecha_inicio_iso)
+    fecha_fin_iso = normalizar_fecha_iso(fecha_fin_iso)
     participantes_str = ", ".join(emails_participantes)
     
     descripcion_evento = (
@@ -532,6 +554,8 @@ def rechazar_reunion(sheets_service, fila_index, titulo, usuario):
     return True, "Reunión rechazada."
 
 def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, requiere_autorizacion=False):
+    fecha_inicio_iso = normalizar_fecha_iso(fecha_inicio_iso)
+    fecha_fin_iso = normalizar_fecha_iso(fecha_fin_iso)
     if requiere_autorizacion:
         return solicitar_reunion_pendiente(sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario)
         
@@ -580,8 +604,8 @@ def cancelar_reunion(calendar_service, sheets_service, event_id, fila_index):
         if reunion and len(reunion[0]) >= 5:
             titulo = reunion[0][0]
             sala = reunion[0][1]
-            inicio_iso = reunion[0][2]
-            fin_iso = reunion[0][3]
+            inicio_iso = normalizar_fecha_iso(reunion[0][2])
+            fin_iso = normalizar_fecha_iso(reunion[0][3])
             participantes = [c.strip() for c in reunion[0][4].split(",") if c.strip()]
             enviar_invitacion_email(titulo, sala, inicio_iso, fin_iso, participantes, "Administrador", event_id, metodo='CANCEL')
     except Exception as e:
