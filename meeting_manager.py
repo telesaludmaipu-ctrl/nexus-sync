@@ -97,6 +97,8 @@ def inicializar_hojas(sheets_service):
         requests.append({'addSheet': {'properties': {'title': 'Salas'}}})
     if 'Personal' not in titles:
         requests.append({'addSheet': {'properties': {'title': 'Personal'}}})
+    if 'Configuracion' not in titles:
+        requests.append({'addSheet': {'properties': {'title': 'Configuracion'}}})
     
     if requests:
         sheets_service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={'requests': requests}).execute()
@@ -111,6 +113,7 @@ def inicializar_hojas(sheets_service):
     asegurar_encabezados('Reuniones', ['Timestamp', 'Titulo', 'Sala', 'Fecha Inicio', 'Fecha Fin', 'Participantes', 'Creado Por', 'Estado', 'Event ID'])
     asegurar_encabezados('Salas', ['Nombre de Sala'])
     asegurar_encabezados('Personal', ['Nombre', 'Correo', 'Sector', 'Estamento'])
+    asegurar_encabezados('Configuracion', ['Clave', 'Valor'])
 
 def obtener_datos(sheets_service, rango):
     result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=rango).execute()
@@ -148,6 +151,128 @@ def actualizar_usuario(sheets_service, fila_index, usuario, password, rol):
     sheets_service.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID, range=rango,
         valueInputOption='USER_ENTERED', body=body).execute()
+
+def obtener_configuracion(sheets_service, clave, default=""):
+    try:
+        datos = obtener_datos(sheets_service, 'Configuracion!A2:B')
+        for fila in datos:
+            if len(fila) >= 2 and fila[0].strip() == clave:
+                return fila[1].strip()
+    except Exception:
+        pass
+    return default
+
+def guardar_configuracion(sheets_service, clave, valor):
+    try:
+        datos = obtener_datos(sheets_service, 'Configuracion!A2:B')
+        for i, fila in enumerate(datos):
+            if len(fila) >= 1 and fila[0].strip() == clave:
+                rango = f"Configuracion!A{i+2}:B{i+2}"
+                sheets_service.spreadsheets().values().update(
+                    spreadsheetId=SPREADSHEET_ID, range=rango,
+                    valueInputOption='USER_ENTERED', body={'values': [[clave, valor]]}).execute()
+                return
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID, range='Configuracion!A1',
+            valueInputOption='USER_ENTERED', body={'values': [[clave, valor]]}).execute()
+    except Exception as e:
+        print(f"Error guardando configuración: {e}")
+
+def marcar_reunion_realizada(sheets_service, fila_index):
+    rango_estado = f"Reuniones!H{fila_index + 1}"
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID, range=rango_estado,
+        valueInputOption='USER_ENTERED', body={'values': [['Realizada']]}).execute()
+
+def notificar_director_reunion_pendiente(titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, email_director):
+    smtp_user, smtp_pass = obtener_credenciales_smtp()
+    if not smtp_user or not smtp_pass or not email_director:
+        print("Aviso: No hay credenciales SMTP o correo de director para notificar.")
+        return False, "Faltan credenciales"
+
+    try:
+        fecha_clean = fecha_inicio_iso.replace("T", " ")[:19]
+        fin_clean = fecha_fin_iso.replace("T", " ")[:19]
+        d_p, t_p = fecha_clean.split(" ") if " " in fecha_clean else (fecha_clean, "")
+        fecha_legible = d_p
+        hora_ini = t_p[:5]
+        hora_fin = fin_clean.split(" ")[1][:5] if " " in fin_clean else ""
+    except Exception:
+        fecha_legible = fecha_inicio_iso
+        hora_ini = ""
+        hora_fin = ""
+
+    asunto = f"🔔 [Por Autorizar] Solicitud de Reunión: {titulo}"
+    
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="font-family: Arial, sans-serif; background-color: #f8fafc; padding: 20px; margin: 0;">
+        <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+            <div style="background-color: #d97706; color: white; padding: 20px; text-align: center;">
+                <h2 style="margin: 0;">🔔 Solicitud de Reunión Pendiente</h2>
+                <p style="margin: 5px 0 0 0; opacity: 0.95;">Control y Autorización Directiva - CESFAM Maipú</p>
+            </div>
+            <div style="padding: 25px;">
+                <p style="color: #334155; font-size: 15px; margin-top: 0;">Estimado/a Director/a,</p>
+                <p style="color: #475569; font-size: 14px; line-height: 1.5;">
+                    El funcionario <b>{usuario}</b> ha ingresado una nueva solicitud de reunión en el sistema que <b>requiere su autorización</b> antes de ser agendada en el calendario y enviada a los participantes:
+                </p>
+                <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #fffbeb; border: 1px solid #fef3c7; border-radius: 6px;">
+                    <tr>
+                        <td style="padding: 10px; color: #78350f; width: 140px; border-bottom: 1px solid #fef3c7;"><b>📌 Título:</b></td>
+                        <td style="padding: 10px; color: #1e293b; border-bottom: 1px solid #fef3c7;"><b>{titulo}</b></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; color: #78350f; border-bottom: 1px solid #fef3c7;"><b>🗓️ Fecha:</b></td>
+                        <td style="padding: 10px; color: #1e293b; border-bottom: 1px solid #fef3c7;">{fecha_legible}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; color: #78350f; border-bottom: 1px solid #fef3c7;"><b>⏰ Horario:</b></td>
+                        <td style="padding: 10px; color: #1e293b; border-bottom: 1px solid #fef3c7;">{hora_ini} a {hora_fin} hrs</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; color: #78350f; border-bottom: 1px solid #fef3c7;"><b>📍 Sala / Ubicación:</b></td>
+                        <td style="padding: 10px; color: #1e293b; border-bottom: 1px solid #fef3c7;"><b>{sala}</b></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; color: #78350f; border-bottom: 1px solid #fef3c7;"><b>👤 Convocado por:</b></td>
+                        <td style="padding: 10px; color: #1e293b; border-bottom: 1px solid #fef3c7;">{usuario}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; color: #78350f; vertical-align: top;"><b>👥 Participantes:</b></td>
+                        <td style="padding: 10px; color: #475569; font-size: 13px;">{', '.join(emails_participantes)}</td>
+                    </tr>
+                </table>
+                <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 14px; border-radius: 4px; font-size: 13px; color: #1e40af; margin-bottom: 15px;">
+                    👉 <b>Acción Requerida:</b> Ingrese a la plataforma <b>Nexus Sync</b> y diríjase a la solapa <b>🛡️ Autorizaciones</b> para revisar y <b>Autorizar</b> o <b>Rechazar</b> esta reunión.
+                </div>
+            </div>
+            <div style="background-color: #f8fafc; padding: 14px; text-align: center; font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0;">
+                CESFAM Maipú | Coordinación y Control de Gestión Clínica
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = asunto
+    msg["From"] = f"CESFAM Maipú <{smtp_user}>"
+    msg["To"] = email_director
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, [email_director], msg.as_string())
+        print(f"Notificación de autorización enviada al director: {email_director}")
+        return True, "Notificación enviada"
+    except Exception as e:
+        print(f"Error enviando correo al director: {e}")
+        return False, str(e)
+
 
 def obtener_credenciales_smtp():
     email = SMTP_USER_DEFAULT
@@ -345,7 +470,71 @@ def actualizar_participantes(calendar_service, sheets_service, event_id, fila_in
         print(f"Error reenviando invitación: {e}")
         return False, str(e)
 
-def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario):
+def solicitar_reunion_pendiente(sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario):
+    participantes_str = ", ".join(emails_participantes)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fila = [[timestamp, titulo, sala, fecha_inicio_iso, fecha_fin_iso, participantes_str, usuario, 'Pendiente', 'PENDIENTE']]
+    
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=SPREADSHEET_ID, range='Reuniones!A1',
+        valueInputOption='USER_ENTERED', body={'values': fila}).execute()
+        
+    director_email = obtener_configuracion(sheets_service, 'director_autorizador', 'telesaludmaipu@gmail.com')
+    if director_email:
+        notificar_director_reunion_pendiente(titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, director_email)
+        
+    return True, "Solicitud enviada exitosamente. La reunión ha quedado PENDIENTE DE AUTORIZACIÓN por la Dirección."
+
+def autorizar_reunion(calendar_service, sheets_service, fila_index, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario):
+    participantes_str = ", ".join(emails_participantes)
+    
+    descripcion_evento = (
+        f"Reunión convocada por: {usuario}\n"
+        f"Sala: {sala}\n"
+        f"Autorizada por: Dirección CESFAM Maipú\n"
+        f"Participantes convocados:\n- " + "\n- ".join(emails_participantes)
+    )
+
+    evento = {
+        'summary': f"{titulo} ({sala})",
+        'location': sala,
+        'description': descripcion_evento,
+        'start': {'dateTime': fecha_inicio_iso, 'timeZone': 'America/Santiago'},
+        'end': {'dateTime': fecha_fin_iso, 'timeZone': 'America/Santiago'},
+        'reminders': {
+            'useDefault': False, 
+            'overrides': [
+                {'method': 'popup', 'minutes': 120},
+                {'method': 'email', 'minutes': 1440}
+            ]
+        },
+    }
+    
+    # 1. Crear evento en Google Calendar institucional
+    event_result = calendar_service.events().insert(calendarId=CALENDAR_ID, body=evento).execute()
+    event_id = event_result['id']
+
+    # 2. Actualizar estado en Google Sheets a 'Activa' y asignar event_id
+    rango = f"Reuniones!H{fila_index + 1}:I{fila_index + 1}"
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID, range=rango,
+        valueInputOption='USER_ENTERED', body={'values': [['Activa', event_id]]}).execute()
+
+    # 3. Enviar invitaciones por correo con archivo .ics interactivo a los participantes
+    enviar_invitacion_email(titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, event_id, metodo='REQUEST')
+    return True, "Reunión autorizada y convocada exitosamente a todos los participantes."
+
+def rechazar_reunion(sheets_service, fila_index, titulo, usuario):
+    rango = f"Reuniones!H{fila_index + 1}"
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID, range=rango,
+        valueInputOption='USER_ENTERED', body={'values': [['Rechazada']]}).execute()
+    return True, "Reunión rechazada."
+
+def agendar_reunion(calendar_service, sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario, requiere_autorizacion=False):
+    if requiere_autorizacion:
+        return solicitar_reunion_pendiente(sheets_service, titulo, sala, fecha_inicio_iso, fecha_fin_iso, emails_participantes, usuario)
+        
     participantes_str = ", ".join(emails_participantes)
     
     descripcion_evento = (

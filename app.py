@@ -9,7 +9,9 @@ from colorthief import ColorThief
 from meeting_manager import (
     obtener_servicios_google, inicializar_hojas, obtener_datos, 
     agregar_sala, agregar_personal, agendar_reunion, cancelar_reunion,
-    actualizar_participantes, obtener_usuarios, agregar_usuario, actualizar_usuario
+    actualizar_participantes, obtener_usuarios, agregar_usuario, actualizar_usuario,
+    obtener_configuracion, guardar_configuracion, marcar_reunion_realizada,
+    autorizar_reunion, rechazar_reunion
 )
 
 # Detectar logo para usarlo como Favicon y en la UI
@@ -22,7 +24,7 @@ if os.path.exists("assets"):
             logo_icon = logo_path
             break
 
-st.set_page_config(page_title="Nexus Sync - Gestión de Reuniones", page_icon=logo_icon, layout="wide")
+st.set_page_config(page_title="CESFAM Maipú - Gestión de Reuniones", page_icon=logo_icon, layout="wide")
 
 # ==========================================
 # LÓGICA DE MARCA BLANCA
@@ -96,6 +98,12 @@ def aplicar_marca_blanca():
     #stDecoration {{
         background-image: linear-gradient(90deg, {color_primario}, {color_primario}) !important;
     }}
+    
+    /* Panel lateral más angosto */
+    [data-testid="stSidebar"] {{
+        min-width: 250px !important;
+        max-width: 260px !important;
+    }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
@@ -110,7 +118,7 @@ def login():
         if logo_path:
             st.image(logo_path, use_container_width=True)
         else:
-            st.markdown(f"<h1 style='text-align: center; color: {color_primario};'>Nexus Sync</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center; color: {color_primario};'>CESFAM Maipú</h1>", unsafe_allow_html=True)
     
     st.markdown("<h4 style='text-align: center; color: gray;'>Plataforma Inteligente de Gestión de Reuniones</h4>", unsafe_allow_html=True)
     st.write("---")
@@ -209,7 +217,7 @@ def main_app():
     
     nombres_tabs = ["📌 Agendar Reunión", "🗓 Mis Reuniones", "⚙️ Gestión de Personal y Salas"]
     if es_directivo:
-        nombres_tabs.extend(["📅 Calendario", "📊 Dashboard", "🔐 Gestión de Usuarios"])
+        nombres_tabs.extend(["📅 Calendario", "📊 Dashboard", "🛡️ Autorizaciones", "🔐 Gestión de Usuarios"])
 
     tabs = st.tabs(nombres_tabs)
 
@@ -217,6 +225,11 @@ def main_app():
     # TAB 1: AGENDAR
     # ----------------------------------------------------
     with tabs[0]:
+        if es_directivo:
+            st.info("👑 **Modo Directivo:** Tu reunión se creará y convocará de inmediato en el calendario institucional y a los participantes.")
+        else:
+            st.info("ℹ️ **Modo Funcionario / Encargado:** Tu reunión quedará registrada como **Pendiente** y se enviará un aviso por correo a la Dirección para su debida autorización.")
+            
         with st.form("form_agendar", clear_on_submit=True):
             st.write("Agendar una nueva reunión:")
             titulo = st.text_input("Título de la Reunión")
@@ -238,7 +251,8 @@ def main_app():
             participantes_sel = st.multiselect("Participantes (Personal Interno)", list(opciones_personal.keys()))
             correos_externos = st.text_input("Correos Externos (Opcional, separados por coma)")
             
-            if st.form_submit_button("Agendar y Enviar Invitaciones"):
+            submit_label = "Agendar y Convocar Reunión" if es_directivo else "Enviar Solicitud a Autorización Directiva"
+            if st.form_submit_button(submit_label):
                 if not titulo or not sala_final:
                     st.error("Título y Sala son obligatorios.")
                 elif hora_fin <= hora_inicio:
@@ -253,7 +267,7 @@ def main_app():
                     reuniones_existentes = obtener_datos(sh_service, 'Reuniones!A2:I')
                     choque = False
                     for r in reuniones_existentes:
-                        if len(r) >= 8 and r[7] == 'Activa' and r[2] == sala_final:
+                        if len(r) >= 8 and r[7] in ['Activa', 'Pendiente'] and r[2] == sala_final:
                             r_inicio = parsear_fecha_segura(r[3])
                             r_fin = parsear_fecha_segura(r[4])
                             if r_inicio and r_fin:
@@ -262,7 +276,7 @@ def main_app():
                                     break
                                 
                     if choque:
-                        st.error(f"❌ ¡Choque de Horario! La sala '{sala_final}' ya tiene una reunión activa en ese bloque de tiempo. Cancela la anterior o elige otra sala/horario.")
+                        st.error(f"❌ ¡Choque de Horario! La sala '{sala_final}' ya tiene una reunión activa o pendiente en ese bloque de tiempo. Cancela la anterior o elige otra sala/horario.")
                     else:
                         if guardar_sala and sala_final:
                             agregar_sala(sh_service, sala_final)
@@ -274,17 +288,26 @@ def main_app():
                         inicio_iso = inicio_dt.isoformat()
                         fin_iso = fin_dt.isoformat()
                         
+                        requiere_autorizacion = (not es_directivo)
                         try:
-                            ok_mail, msg_mail = agendar_reunion(cal_service, sh_service, titulo, sala_final, inicio_iso, fin_iso, emails, st.session_state['usuario_actual'])
-                            if ok_mail:
-                                st.success("🎉 Reunión agendada exitosamente e invitaciones enviadas a los correos.")
+                            ok_mail, msg_mail = agendar_reunion(
+                                cal_service, sh_service, titulo, sala_final, 
+                                inicio_iso, fin_iso, emails, 
+                                st.session_state['usuario_actual'], 
+                                requiere_autorizacion=requiere_autorizacion
+                            )
+                            if requiere_autorizacion:
+                                st.success("📋 Solicitud enviada exitosamente. Quedó registrada como PENDIENTE de autorización por la Dirección y se notificó al Director por correo.")
                             else:
-                                st.warning(f"⚠️ Reunión registrada en calendario y planilla, pero hubo un detalle con el correo: {msg_mail}")
+                                if ok_mail:
+                                    st.success("🎉 Reunión agendada exitosamente e invitaciones enviadas a los correos.")
+                                else:
+                                    st.warning(f"⚠️ Reunión registrada en calendario y planilla, pero hubo un detalle con el correo: {msg_mail}")
                         except Exception as e:
                             st.error(f"Error: {e}")
 
     # ----------------------------------------------------
-    # TAB 2: MIS REUNIONES (CON EDICIÓN DE PARTICIPANTES)
+    # TAB 2: MIS REUNIONES (CON CONTROL DE ESTADOS Y BLOQUEO)
     # ----------------------------------------------------
     with tabs[1]:
         if st.button("🔄 Refrescar Lista"):
@@ -292,53 +315,94 @@ def main_app():
             
         reuniones_data = obtener_datos(sh_service, 'Reuniones!A1:I')
         hay_reuniones = False
+        ahora = datetime.datetime.now()
         
         # Invertimos para ver primero las más nuevas en la lista
         for idx in range(len(reuniones_data)-1, 0, -1):
             fila = reuniones_data[idx]
             if len(fila) < 9: continue
-            if fila[7] == 'Cancelada': continue
+            estado_reunion = fila[7]
+            if estado_reunion == 'Cancelada': continue
             hay_reuniones = True
             
-            with st.expander(f"🔴 {fila[1]} - {fila[3][:10]}"):
-                st.write(f"**Sala/Ubicación:** {fila[2]}")
-                st.write(f"**Fecha y Hora:** {fila[3].replace('T', ' ')} a {fila[4].replace('T', ' ')}")
-                st.write(f"**Agendado por:** {fila[6]}")
+            dt_inicio = parsear_fecha_segura(fila[3])
+            dt_fin = parsear_fecha_segura(fila[4])
+            
+            es_pasada = bool(dt_fin and dt_fin < ahora) or (estado_reunion == 'Realizada')
+            
+            # Asignar badge representativo
+            if estado_reunion == 'Pendiente':
+                badge_estado = "🟡 [PENDIENTE DE AUTORIZACIÓN]"
+            elif estado_reunion == 'Realizada':
+                badge_estado = "✅ [REALIZADA]"
+            elif estado_reunion == 'Rechazada':
+                badge_estado = "❌ [RECHAZADA]"
+            elif es_pasada:
+                badge_estado = "⏳ [FINALIZADA]"
+            else:
+                badge_estado = "🔵 [ACTIVA]"
+            
+            with st.expander(f"{badge_estado} {fila[1]} - {fila[3][:10]}"):
+                c_inf1, c_inf2 = st.columns(2)
+                with c_inf1:
+                    st.write(f"**Sala/Ubicación:** {fila[2]}")
+                    st.write(f"**Fecha y Hora:** {fila[3].replace('T', ' ')} a {fila[4].replace('T', ' ')}")
+                with c_inf2:
+                    st.write(f"**Agendado por:** {fila[6]}")
+                    st.write(f"**Estado Actual:** **{estado_reunion}**")
                 
-                correos_actuales = [c.strip() for c in fila[5].split(",") if c.strip()]
-                etiquetas_actuales = []
-                for lbl, c in opciones_personal.items():
-                    if c in correos_actuales:
-                        etiquetas_actuales.append(lbl)
-                
+                # Botón para marcar como Realizada (reuniones activas)
+                if estado_reunion == 'Activa':
+                    if st.button("✅ Marcar como Realizada", key=f"done_{idx}"):
+                        marcar_reunion_realizada(sh_service, idx)
+                        st.success("Reunión marcada como Realizada.")
+                        st.rerun()
+
                 st.write("---")
-                st.write("**Modificar Participantes**")
                 
-                nuevos_participantes = st.multiselect(
-                    "Participantes Internos", 
-                    list(opciones_personal.keys()), 
-                    default=etiquetas_actuales,
-                    key=f"edit_part_{idx}"
-                )
-                
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("Guardar Nuevos Participantes", key=f"upd_{idx}"):
-                        nuevos_correos = [opciones_personal[lbl] for lbl in nuevos_participantes]
-                        for c in correos_actuales:
-                            if c not in mapeo_personal and c not in nuevos_correos:
-                                nuevos_correos.append(c)
-                        
-                        actualizar_participantes(cal_service, sh_service, fila[8], idx, nuevos_correos)
-                        st.success("Participantes actualizados.")
-                        st.rerun()
-                
-                with col_btn2:
-                    if st.button("Cancelar esta Reunión", key=f"del_{idx}", type="primary"):
+                # BLOQUEO SI ES PASADA O YA REALIZADA/RECHAZADA
+                if es_pasada or estado_reunion in ['Realizada', 'Rechazada']:
+                    st.info("🔒 Esta reunión ya se realizó o finalizó su horario. Las opciones de edición de participantes y cancelación se encuentran bloqueadas por seguridad del registro histórico.")
+                elif estado_reunion == 'Pendiente':
+                    st.warning("⏳ Esta reunión está a la espera de ser autorizada por la Dirección. No se han enviado convocatorias oficiales.")
+                    if st.button("❌ Desistir / Cancelar Solicitud", key=f"del_pend_{idx}", type="primary"):
                         cancelar_reunion(cal_service, sh_service, fila[8], idx)
-                        st.success("Reunión cancelada y guardada en el registro.")
+                        st.success("Solicitud retirada del sistema.")
                         st.rerun()
+                else:
+                    # REUNIÓN ACTIVA Y FUTURA: Permitir edición de participantes y cancelación
+                    st.write("**Modificar Participantes**")
+                    correos_actuales = [c.strip() for c in fila[5].split(",") if c.strip()]
+                    etiquetas_actuales = []
+                    for lbl, c in opciones_personal.items():
+                        if c in correos_actuales:
+                            etiquetas_actuales.append(lbl)
                     
+                    nuevos_participantes = st.multiselect(
+                        "Participantes Internos", 
+                        list(opciones_personal.keys()), 
+                        default=etiquetas_actuales,
+                        key=f"edit_part_{idx}"
+                    )
+                    
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("💾 Guardar Nuevos Participantes", key=f"upd_{idx}"):
+                            nuevos_correos = [opciones_personal[lbl] for lbl in nuevos_participantes]
+                            for c in correos_actuales:
+                                if c not in mapeo_personal and c not in nuevos_correos:
+                                    nuevos_correos.append(c)
+                            
+                            actualizar_participantes(cal_service, sh_service, fila[8], idx, nuevos_correos)
+                            st.success("Participantes actualizados.")
+                            st.rerun()
+                    
+                    with col_btn2:
+                        if st.button("🚨 Cancelar esta Reunión", key=f"del_{idx}", type="primary"):
+                            cancelar_reunion(cal_service, sh_service, fila[8], idx)
+                            st.success("Reunión cancelada y guardada en el registro.")
+                            st.rerun()
+                        
         if not hay_reuniones:
             st.info("No hay reuniones activas registradas en la base de datos.")
 
@@ -385,7 +449,7 @@ def main_app():
             
             eventos = []
             for fila in reuniones_data:
-                if len(fila) >= 9 and fila[7] in ['Activa', 'Cancelada']:
+                if len(fila) >= 9 and fila[7] in ['Activa', 'Realizada', 'Cancelada']:
                     dt_inicio = parsear_fecha_segura(fila[3])
                     dt_fin = parsear_fecha_segura(fila[4])
                     if dt_inicio and dt_fin:
@@ -403,6 +467,12 @@ def main_app():
             else:
                 now = datetime.datetime.now()
                 
+                # Inicializar estado del calendario en session_state para sincronización con flechas
+                if 'cal_mes' not in st.session_state:
+                    st.session_state['cal_mes'] = now.month
+                if 'cal_ano' not in st.session_state:
+                    st.session_state['cal_ano'] = now.year
+
                 # Buscar la próxima reunión activa futura para el contador regresivo
                 reuniones_futuras = [e for e in eventos if e['estado'] == 'Activa' and e['inicio'] > now]
                 reuniones_futuras.sort(key=lambda x: x['inicio'])
@@ -412,15 +482,34 @@ def main_app():
                 meses_es = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio", 
                             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
                 
-                anos_disponibles = sorted(list(set([e['inicio'].year for e in eventos])))
-                if now.year not in anos_disponibles:
-                    anos_disponibles.append(now.year)
+                anos_disponibles = sorted(list(set([e['inicio'].year for e in eventos] + [now.year, now.year + 1, now.year - 1])))
+                if st.session_state['cal_ano'] not in anos_disponibles:
+                    anos_disponibles.append(st.session_state['cal_ano'])
                     anos_disponibles.sort()
                     
                 with col_m:
-                    mes_sel = st.selectbox("Filtrar por Mes", options=list(meses_es.keys()), format_func=lambda x: meses_es[x], index=now.month - 1)
+                    def actualizar_mes():
+                        st.session_state['cal_mes'] = st.session_state['sel_box_mes']
+
+                    mes_sel = st.selectbox(
+                        "Filtrar por Mes", 
+                        options=list(meses_es.keys()), 
+                        format_func=lambda x: meses_es[x], 
+                        index=st.session_state['cal_mes'] - 1,
+                        key="sel_box_mes",
+                        on_change=actualizar_mes
+                    )
                 with col_y:
-                    ano_sel = st.selectbox("Filtrar por Año", options=anos_disponibles, index=anos_disponibles.index(now.year))
+                    def actualizar_ano():
+                        st.session_state['cal_ano'] = st.session_state['sel_box_ano']
+
+                    ano_sel = st.selectbox(
+                        "Filtrar por Año", 
+                        options=anos_disponibles, 
+                        index=anos_disponibles.index(st.session_state['cal_ano']),
+                        key="sel_box_ano",
+                        on_change=actualizar_ano
+                    )
                     
                 with col_count:
                     if proxima_reunion:
@@ -445,14 +534,43 @@ def main_app():
                         """, unsafe_allow_html=True)
                     
                 st.write("---")
-                eventos_filtrados = [e for e in eventos if e['inicio'].month == mes_sel and e['inicio'].year == ano_sel]
+
+                # --- CONTROL DE NAVEGACIÓN CON FLECHAS Y TÍTULO SOBRE LA MATRIZ ---
+                def paso_mes(delta):
+                    m = st.session_state['cal_mes'] + delta
+                    a = st.session_state['cal_ano']
+                    if m < 1:
+                        st.session_state['cal_mes'] = 12
+                        st.session_state['cal_ano'] = a - 1
+                    elif m > 12:
+                        st.session_state['cal_mes'] = 1
+                        st.session_state['cal_ano'] = a + 1
+                    else:
+                        st.session_state['cal_mes'] = m
+
+                col_arr_izq, col_arr_tit, col_arr_der = st.columns([1, 4, 1])
+                with col_arr_izq:
+                    if st.button("◀ Mes Anterior", key="btn_prev_mes", use_container_width=True):
+                        paso_mes(-1)
+                        st.rerun()
+                with col_arr_tit:
+                    st.markdown(f"<h3 style='text-align: center; margin: 0; color: {color_primario};'>🗓️ {meses_es[st.session_state['cal_mes']]} de {st.session_state['cal_ano']}</h3>", unsafe_allow_html=True)
+                with col_arr_der:
+                    if st.button("Mes Siguiente ▶", key="btn_next_mes", use_container_width=True):
+                        paso_mes(1)
+                        st.rerun()
+
+                mes_actual = st.session_state['cal_mes']
+                ano_actual = st.session_state['cal_ano']
+
+                eventos_filtrados = [e for e in eventos if e['inicio'].month == mes_actual and e['inicio'].year == ano_actual]
                 eventos_filtrados.sort(key=lambda x: x['inicio'])
                 
                 if not eventos_filtrados:
-                    st.warning(f"No hay reuniones registradas en {meses_es[mes_sel]} de {ano_sel}.")
+                    st.warning(f"No hay reuniones registradas en {meses_es[mes_actual]} de {ano_actual}.")
                 
                 # --- RENDERIZADO DEL CALENDARIO HTML MATRIZ ---
-                cal_matrix = calendar.monthcalendar(ano_sel, mes_sel)
+                cal_matrix = calendar.monthcalendar(ano_actual, mes_actual)
                 dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
                 
                 html_cal = "<table style='width:100%; border-collapse: collapse; margin-top: 10px; font-family: sans-serif;'>"
@@ -475,15 +593,19 @@ def main_app():
                                     bg_color = color_primario
                                     txt_color = "white"
                                     tachado = ""
+                                elif ev['estado'] == 'Realizada':
+                                    bg_color = "#10b981" # Verde completada
+                                    txt_color = "white"
+                                    tachado = ""
                                 else:
                                     bg_color = "#ff4b4b" # Rojo cancelado
                                     txt_color = "white"
                                     tachado = "text-decoration: line-through; opacity: 0.7;"
                                     
-                                html_eventos += f"<div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'><b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br><span style='font-size: 9px;'>📍 {ev['sala']}</span></div>"
+                                html_eventos += f"<div style='background-color: {bg_color}; color: {txt_color}; border-radius: 4px; padding: 3px 5px; margin-top: 4px; font-size: 11px; {tachado} line-height: 1.2;'><b>{ev['inicio'].strftime('%H:%M')}</b> - {ev['titulo']}<br><span style='font-size: 9px;'>📍 {ev['sala']} ({ev['estado']})</span></div>"
                                 
                             # Si es hoy, resaltar el número
-                            es_hoy = (dia == now.day and mes_sel == now.month and ano_sel == now.year)
+                            es_hoy = (dia == now.day and mes_actual == now.month and ano_actual == now.year)
                             estilo_num = f"background-color: {color_primario}; color: white; border-radius: 50%; padding: 2px 6px; display: inline-block;" if es_hoy else "color: gray; font-weight: bold;"
                             
                             html_cal += f"<td style='border: 1px solid #ddd; padding: 5px; vertical-align: top; height: 120px;'>"
@@ -579,9 +701,104 @@ def main_app():
                 st.info("No hay suficientes datos de participantes internos para mostrar métricas.")
 
         # ----------------------------------------------------
-        # TAB 6: GESTIÓN DE USUARIOS
+        # TAB 6: AUTORIZACIONES (CONTROL DIRECTIVO)
         # ----------------------------------------------------
         with tabs[5]:
+            st.header("🛡️ Control y Autorización de Reuniones")
+            st.write("Módulo de control de gestión. Revisa y autoriza las solicitudes de reunión generadas por los encargados de programa y funcionarios antes de ser publicadas en el calendario oficial y notificadas a los equipos.")
+            
+            # --- ASIGNACIÓN DE DIRECTOR AUTORIZADOR ---
+            st.subheader("👤 Funcionario Autorizador Asignado")
+            email_director_actual = obtener_configuracion(sh_service, 'director_autorizador', 'telesaludmaipu@gmail.com')
+            
+            col_aut1, col_aut2 = st.columns([3, 1])
+            with col_aut1:
+                opciones_directores = {}
+                idx_defecto = 0
+                for idx_p, (lbl, mail) in enumerate(opciones_personal.items()):
+                    opciones_directores[lbl] = mail
+                    if mail == email_director_actual:
+                        idx_defecto = idx_p
+                
+                if not opciones_directores:
+                    opciones_directores = {"telesaludmaipu@gmail.com": "telesaludmaipu@gmail.com"}
+                
+                director_sel_label = st.selectbox(
+                    "Selecciona el Directivo responsable de autorizar (recibirá los correos de alerta cuando se cree una reunión):",
+                    options=list(opciones_directores.keys()),
+                    index=idx_defecto if idx_defecto < len(opciones_directores) else 0
+                )
+                correo_director_sel = opciones_directores.get(director_sel_label, email_director_actual)
+            
+            with col_aut2:
+                st.write("")
+                st.write("")
+                if st.button("💾 Asignar Autorizador", use_container_width=True):
+                    guardar_configuracion(sh_service, 'director_autorizador', correo_director_sel)
+                    st.success(f"Director autorizador actualizado: {correo_director_sel}")
+                    st.rerun()
+                    
+            st.caption(f"📧 Correo actualmente configurado para recibir alertas de autorización: **{email_director_actual}**")
+            st.write("---")
+            
+            # --- BANDEJA DE SOLICITUDES PENDIENTES ---
+            st.subheader("📥 Solicitudes Pendientes de Aprobación")
+            
+            reuniones_todas = obtener_datos(sh_service, 'Reuniones!A1:I')
+            solicitudes_pendientes = []
+            for idx, fila in enumerate(reuniones_todas):
+                if idx == 0: continue
+                if len(fila) >= 8 and fila[7] == 'Pendiente':
+                    solicitudes_pendientes.append((idx, fila))
+                    
+            if not solicitudes_pendientes:
+                st.success("✅ No hay solicitudes pendientes de autorización en este momento. Todas las reuniones están al día.")
+            else:
+                st.info(f"Tienes **{len(solicitudes_pendientes)}** solicitud(es) esperando tu revisión.")
+                
+                for idx, fila in solicitudes_pendientes:
+                    titulo_sol = fila[1] if len(fila) > 1 else "Sin Título"
+                    sala_sol = fila[2] if len(fila) > 2 else "Sin Sala"
+                    inicio_sol = fila[3] if len(fila) > 3 else ""
+                    fin_sol = fila[4] if len(fila) > 4 else ""
+                    part_sol = fila[5] if len(fila) > 5 else ""
+                    creador_sol = fila[6] if len(fila) > 6 else ""
+                    
+                    with st.expander(f"⏳ Solicitud: {titulo_sol} | Convocado por: {creador_sol}", expanded=True):
+                        c_det1, c_det2 = st.columns(2)
+                        with c_det1:
+                            st.write(f"**📌 Título:** {titulo_sol}")
+                            st.write(f"**📍 Sala / Ubicación:** {sala_sol}")
+                            st.write(f"**🗓️ Horario:** {inicio_sol.replace('T', ' ')} a {fin_sol.replace('T', ' ')}")
+                        with c_det2:
+                            st.write(f"**👤 Solicitado por:** {creador_sol}")
+                            st.write(f"**👥 Participantes:** {part_sol}")
+                            
+                        correos_participantes = [c.strip() for c in part_sol.split(",") if c.strip()]
+                        
+                        col_acc1, col_acc2 = st.columns(2)
+                        with col_acc1:
+                            if st.button("✅ Autorizar y Enviar a Todo el Equipo", key=f"btn_aut_{idx}", type="primary", use_container_width=True):
+                                with st.spinner("Creando evento en Google Calendar y despachando invitaciones por correo..."):
+                                    ok_aut, msg_aut = autorizar_reunion(
+                                        cal_service, sh_service, idx, titulo_sol, sala_sol,
+                                        inicio_sol, fin_sol, correos_participantes, creador_sol
+                                    )
+                                    if ok_aut:
+                                        st.success(f"🎉 ¡Reunión autorizada con éxito! {msg_aut}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Error autorizando reunión: {msg_aut}")
+                        with col_acc2:
+                            if st.button("❌ Rechazar Solicitud", key=f"btn_rech_{idx}", use_container_width=True):
+                                ok_rech, msg_rech = rechazar_reunion(sh_service, idx, titulo_sol, creador_sol)
+                                st.warning("La solicitud ha sido rechazada.")
+                                st.rerun()
+
+        # ----------------------------------------------------
+        # TAB 7: GESTIÓN DE USUARIOS
+        # ----------------------------------------------------
+        with tabs[6]:
             st.header("🔐 Gestión de Usuarios y Roles")
             st.write("Administra quién puede acceder al sistema.")
             
